@@ -4,131 +4,145 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include <unordered_map>
+#include <set>
 #include <filesystem>
 
 namespace fs = std::filesystem;
 
 const std::string DATA_FILE = "database.dat";
+const std::string INDEX_FILE = "database.idx";
 
-struct Entry {
-    std::string index;
+struct IndexEntry {
+    long file_pos;
     int value;
     bool deleted;
     
-    Entry(const std::string& idx, int val, bool del = false) 
-        : index(idx), value(val), deleted(del) {}
+    IndexEntry(long pos, int val, bool del = false) 
+        : file_pos(pos), value(val), deleted(del) {}
 };
 
 class FileDatabase {
 private:
-    std::string filename;
+    std::string data_filename;
+    std::string index_filename;
     
-    bool fileExists() {
+    bool fileExists(const std::string& filename) {
         return fs::exists(filename);
     }
     
-    bool entryExists(const std::string& index, int value) {
-        if (!fileExists()) return false;
+    void loadIndex(std::unordered_map<std::string, std::vector<IndexEntry>>& index) {
+        if (!fileExists(index_filename)) return;
         
-        std::ifstream file(filename);
+        std::ifstream file(index_filename, std::ios::binary);
         std::string line;
         
         while (std::getline(file, line)) {
             if (line.empty()) continue;
             
             std::istringstream iss(line);
-            char status;
-            std::string fileIndex;
-            int fileValue;
+            std::string key;
+            long file_pos;
+            int value;
+            char deleted;
             
-            if (iss >> status >> fileIndex >> fileValue) {
-                if (status == 'A' && fileIndex == index && fileValue == value) {
-                    return true;
-                }
+            if (iss >> key >> file_pos >> value >> deleted) {
+                index[key].emplace_back(file_pos, value, deleted == '1');
             }
         }
+        file.close();
+    }
+    
+    void saveIndex(const std::unordered_map<std::string, std::vector<IndexEntry>>& index) {
+        std::ofstream file(index_filename);
         
+        for (const auto& pair : index) {
+            for (const auto& entry : pair.second) {
+                file << pair.first << " " << entry.file_pos << " " 
+                     << entry.value << " " << (entry.deleted ? '1' : '0') << "\n";
+            }
+        }
+        file.close();
+    }
+    
+    bool entryExistsInIndex(const std::unordered_map<std::string, std::vector<IndexEntry>>& index,
+                           const std::string& key, int value) {
+        auto it = index.find(key);
+        if (it == index.end()) return false;
+        
+        for (const auto& entry : it->second) {
+            if (!entry.deleted && entry.value == value) {
+                return true;
+            }
+        }
         return false;
     }
     
 public:
-    FileDatabase(const std::string& fname) : filename(fname) {}
+    FileDatabase(const std::string& data_fname, const std::string& idx_fname) 
+        : data_filename(data_fname), index_filename(idx_fname) {}
     
-    void insert(const std::string& index, int value) {
+    void insert(const std::string& key, int value) {
+        // Load index
+        std::unordered_map<std::string, std::vector<IndexEntry>> index;
+        loadIndex(index);
+        
         // Check if entry already exists
-        if (entryExists(index, value)) {
+        if (entryExistsInIndex(index, key, value)) {
             return;
         }
         
-        std::ofstream file(filename, std::ios::app);
-        file << "A " << index << " " << value << "\n";
-        file.close();
+        // Append to data file
+        std::ofstream data_file(data_filename, std::ios::app);
+        long file_pos = data_file.tellp();
+        data_file << key << " " << value << "\n";
+        data_file.close();
+        
+        // Update index
+        index[key].emplace_back(file_pos, value, false);
+        saveIndex(index);
     }
     
-    void deleteEntry(const std::string& index, int value) {
-        if (!fileExists()) return;
+    void deleteEntry(const std::string& key, int value) {
+        // Load index
+        std::unordered_map<std::string, std::vector<IndexEntry>> index;
+        loadIndex(index);
         
-        // Read all entries
-        std::vector<std::string> lines;
-        std::ifstream file(filename);
-        std::string line;
+        // Find and mark as deleted
+        auto it = index.find(key);
+        if (it == index.end()) return;
+        
         bool found = false;
-        
-        while (std::getline(file, line)) {
-            if (line.empty()) continue;
-            
-            std::istringstream iss(line);
-            char status;
-            std::string fileIndex;
-            int fileValue;
-            
-            if (iss >> status >> fileIndex >> fileValue) {
-                if (status == 'A' && fileIndex == index && fileValue == value) {
-                    // Mark as deleted
-                    lines.push_back("D " + fileIndex + " " + std::to_string(fileValue));
-                    found = true;
-                } else {
-                    lines.push_back(line);
-                }
+        for (auto& entry : it->second) {
+            if (!entry.deleted && entry.value == value) {
+                entry.deleted = true;
+                found = true;
+                break;
             }
         }
-        file.close();
         
-        // Write back all entries
         if (found) {
-            std::ofstream outFile(filename);
-            for (const auto& l : lines) {
-                outFile << l << "\n";
-            }
-            outFile.close();
+            saveIndex(index);
         }
     }
     
-    void find(const std::string& index) {
-        if (!fileExists()) {
+    void find(const std::string& key) {
+        // Load index
+        std::unordered_map<std::string, std::vector<IndexEntry>> index;
+        loadIndex(index);
+        
+        auto it = index.find(key);
+        if (it == index.end()) {
             std::cout << "null\n";
             return;
         }
         
         std::vector<int> values;
-        std::ifstream file(filename);
-        std::string line;
-        
-        while (std::getline(file, line)) {
-            if (line.empty()) continue;
-            
-            std::istringstream iss(line);
-            char status;
-            std::string fileIndex;
-            int fileValue;
-            
-            if (iss >> status >> fileIndex >> fileValue) {
-                if (status == 'A' && fileIndex == index) {
-                    values.push_back(fileValue);
-                }
+        for (const auto& entry : it->second) {
+            if (!entry.deleted) {
+                values.push_back(entry.value);
             }
         }
-        file.close();
         
         if (values.empty()) {
             std::cout << "null\n";
@@ -147,7 +161,7 @@ int main() {
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
     
-    FileDatabase db(DATA_FILE);
+    FileDatabase db(DATA_FILE, INDEX_FILE);
     
     int n;
     std::cin >> n;
