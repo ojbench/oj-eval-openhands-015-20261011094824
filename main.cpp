@@ -4,8 +4,6 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
-#include <unordered_map>
-#include <set>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -15,14 +13,13 @@ const std::string DATA_FILE = "database.dat";
 class FileDatabase {
 private:
     std::string data_filename;
-    std::unordered_map<std::string, std::set<int>> data; // Keep index in memory
     
     bool fileExists(const std::string& filename) {
         return fs::exists(filename);
     }
     
-    void loadFromFile() {
-        if (!fileExists(data_filename)) return;
+    bool entryExists(const std::string& key, int value) {
+        if (!fileExists(data_filename)) return false;
         
         std::ifstream file(data_filename);
         std::string line;
@@ -31,72 +28,114 @@ private:
             if (line.empty()) continue;
             
             std::istringstream iss(line);
-            std::string key;
-            int value;
+            std::string fileKey;
+            int fileValue;
             
-            if (iss >> key >> value) {
-                data[key].insert(value);
+            if (iss >> fileKey >> fileValue) {
+                if (fileKey == key && fileValue == value) {
+                    file.close();
+                    return true;
+                }
             }
         }
         file.close();
+        return false;
     }
     
-    void saveToFile() {
-        std::ofstream file(data_filename);
+    void deleteFromFile(const std::string& key, int value) {
+        if (!fileExists(data_filename)) return;
         
-        for (const auto& pair : data) {
-            for (int value : pair.second) {
-                file << pair.first << " " << value << "\n";
+        std::vector<std::string> lines;
+        std::ifstream file(data_filename);
+        std::string line;
+        bool found = false;
+        
+        while (std::getline(file, line)) {
+            if (line.empty()) {
+                lines.push_back(line);
+                continue;
+            }
+            
+            std::istringstream iss(line);
+            std::string fileKey;
+            int fileValue;
+            
+            if (iss >> fileKey >> fileValue) {
+                if (fileKey == key && fileValue == value) {
+                    found = true;
+                    // Skip this line (delete it)
+                } else {
+                    lines.push_back(line);
+                }
+            } else {
+                lines.push_back(line);
             }
         }
         file.close();
+        
+        if (found) {
+            std::ofstream outFile(data_filename);
+            for (const auto& l : lines) {
+                outFile << l << "\n";
+            }
+            outFile.close();
+        }
     }
     
 public:
-    FileDatabase(const std::string& fname) : data_filename(fname) {
-        loadFromFile(); // Load data at startup
-    }
-    
-    ~FileDatabase() {
-        saveToFile(); // Save data at shutdown
-    }
+    FileDatabase(const std::string& fname) : data_filename(fname) {}
     
     void insert(const std::string& key, int value) {
         // Check if entry already exists
-        if (data[key].find(value) != data[key].end()) {
+        if (entryExists(key, value)) {
             return;
         }
         
-        data[key].insert(value);
+        // Append to file
+        std::ofstream file(data_filename, std::ios::app);
+        file << key << " " << value << "\n";
+        file.close();
     }
     
     void deleteEntry(const std::string& key, int value) {
-        auto it = data.find(key);
-        if (it == data.end()) return;
-        
-        it->second.erase(value);
-        
-        // Remove empty key
-        if (it->second.empty()) {
-            data.erase(it);
-        }
+        deleteFromFile(key, value);
     }
     
     void find(const std::string& key) {
-        auto it = data.find(key);
-        if (it == data.end() || it->second.empty()) {
+        if (!fileExists(data_filename)) {
             std::cout << "null\n";
             return;
         }
         
-        // Values are already sorted in set
-        bool first = true;
-        for (int value : it->second) {
-            if (!first) std::cout << " ";
-            std::cout << value;
-            first = false;
+        std::vector<int> values;
+        std::ifstream file(data_filename);
+        std::string line;
+        
+        while (std::getline(file, line)) {
+            if (line.empty()) continue;
+            
+            std::istringstream iss(line);
+            std::string fileKey;
+            int fileValue;
+            
+            if (iss >> fileKey >> fileValue) {
+                if (fileKey == key) {
+                    values.push_back(fileValue);
+                }
+            }
         }
-        std::cout << "\n";
+        file.close();
+        
+        if (values.empty()) {
+            std::cout << "null\n";
+        } else {
+            std::sort(values.begin(), values.end());
+            for (size_t i = 0; i < values.size(); ++i) {
+                if (i > 0) std::cout << " ";
+                std::cout << values[i];
+            }
+            std::cout << "\n";
+        }
     }
 };
 
